@@ -10,3 +10,4 @@ const RejvenApp = dynamic(() => import("./components/RejvenApp"), { ssr: false }
 export default function Page() {
   return <RejvenApp />;
 }
+
