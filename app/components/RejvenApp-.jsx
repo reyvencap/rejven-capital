@@ -624,17 +624,63 @@ function Manage({ funds, setFunds, onAdd, feed, feedLabel }) {
   const today = new Date().toISOString().slice(0, 10);
   const [fid, setFid] = useState(funds[0]?.id || "");
   const [side, setSide] = useState("Buy");
-  const [tk, setTk] = useState("");
   const [shares, setShares] = useState("");
   const [price, setPrice] = useState("");
   const [date, setDate] = useState(today);
   const [done, setDone] = useState(false);
 
+  // stock search (same flow as "Add a stock")
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [searchErr, setSearchErr] = useState("");
+  const [picked, setPicked] = useState(null);   // { tk, name }
+  const [loadingPrice, setLoadingPrice] = useState(false);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (picked || q.length < 1) { setResults([]); setSearchErr(""); setSearching(false); return; }
+    let alive = true;
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        if (!alive) return;
+        if (data.error) { setSearchErr(data.error); setResults([]); }
+        else { setSearchErr(""); setResults(data.result || []); }
+      } catch {
+        if (alive) { setSearchErr("Could not reach search."); setResults([]); }
+      } finally {
+        if (alive) setSearching(false);
+      }
+    }, 300);
+    return () => { alive = false; clearTimeout(t); };
+  }, [query, picked]);
+
+  async function pick(sym, desc) {
+    const name = desc || sym;
+    setResults([]);
+    setQuery(`${name} (${sym})`);
+    setPicked({ tk: sym, name });
+    setLoadingPrice(true);
+    try {
+      const res = await fetch(`/api/quotes?symbols=${encodeURIComponent(sym)}`);
+      const map = await res.json();
+      const q = map[sym];
+      if (q && q.c) setPrice(String(+(+q.c).toFixed(2)));
+    } catch {
+      /* leave price empty; user can type it */
+    } finally {
+      setLoadingPrice(false);
+    }
+  }
+
   function submit() {
     const s = +shares, p = +price;
-    if (!tk.trim() || !(s > 0) || !(p > 0)) return;
-    onAdd(fid, { tk: tk.trim().toUpperCase(), side, shares: s, price: p, date });
-    setTk(""); setShares(""); setPrice("");
+    if (!picked || !(s > 0) || !(p > 0)) return;
+    onAdd(fid, { tk: picked.tk.toUpperCase(), side, shares: s, price: p, date });
+    setShares(""); setPrice(""); setQuery(""); setPicked(null); setResults([]);
     setDone(true); setTimeout(() => setDone(false), 2200);
   }
 
@@ -669,7 +715,37 @@ function Manage({ funds, setFunds, onAdd, feed, feedLabel }) {
       {/* log a trade */}
       <div className="panel">
         <h3>Log a trade</h3>
-        <div className="form-grid" style={{ marginTop: 2 }}>
+
+        <label className="fld" style={{ marginBottom: 0 }}>Stock</label>
+        <div className="search-wrap">
+          <input
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); if (picked) setPicked(null); }}
+            placeholder="Search any exchange — e.g. Volvo, Apple, AAPL"
+            aria-label="Search for a stock"
+          />
+          {results.length > 0 && (
+            <div className="results">
+              {results.map((r) => (
+                <button type="button" className="result" key={r.symbol} onClick={() => pick(r.symbol, r.description)}>
+                  <span className="num" style={{ fontWeight: 600, minWidth: 70 }}>{r.displaySymbol || r.symbol}</span>
+                  <span className="desc">{r.description}</span>
+                  <span className="ex">{r.type}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {searching && <div className="note" style={{ marginTop: 6 }}>Searching…</div>}
+        {searchErr && <div className="note" style={{ marginTop: 6, color: "var(--loss)" }}>{searchErr}</div>}
+        {picked && (
+          <div className="note" style={{ marginTop: 6, color: "#5d584c" }}>
+            Selected <b className="num" style={{ marginLeft: 4 }}>{picked.tk}</b>
+            {loadingPrice ? " — fetching price…" : (price ? <> · price now <b className="num">{usd2(+price)}</b> (you can edit it below)</> : "")}
+          </div>
+        )}
+
+        <div className="form-grid" style={{ marginTop: 12 }}>
           <label className="fld">Fund
             <select value={fid} onChange={(e) => setFid(e.target.value)}>
               {funds.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
@@ -680,25 +756,26 @@ function Manage({ funds, setFunds, onAdd, feed, feedLabel }) {
               <option>Buy</option><option>Sell</option>
             </select>
           </label>
-          <label className="fld">Ticker
-            <input value={tk} onChange={(e) => setTk(e.target.value)} placeholder="NVDA" />
-          </label>
           <label className="fld">Shares
             <input value={shares} onChange={(e) => setShares(e.target.value)} placeholder="100" inputMode="decimal" />
           </label>
           <label className="fld">Price
-            <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="134.70" inputMode="decimal" />
+            <input className="num" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="—" inputMode="decimal" />
           </label>
           <label className="fld">Date
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 16 }}>
-          <button className="btn" onClick={submit}><Plus size={16} /> Add to ledger</button>
+          <button className="btn" onClick={submit}
+                  disabled={!picked || !(+shares > 0) || !(+price > 0)}
+                  style={{ opacity: (!picked || !(+shares > 0) || !(+price > 0)) ? 0.5 : 1 }}>
+            <Plus size={16} /> Add to ledger
+          </button>
           {done && <span className="num gain" style={{ fontSize: 13 }}>Logged ✓</span>}
         </div>
         <div className="note">
-          <Activity size={14} /> In production this writes to your database; the live feed revalues the position from there.
+          <Activity size={14} /> Pick a stock to auto-fill today’s price; edit it for past trades. In production this writes to your database.
         </div>
       </div>
 
